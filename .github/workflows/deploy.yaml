@@ -24,8 +24,9 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  CFN_BUCKET: ${{ secrets.CFN_BUCKET }}
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  CFN_BUCKET: ${{ vars.CFN_BUCKET }}
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
   STACK_NAME: cfn-demo-infrastructure
   TEMPLATE_FILE: cloudformation/infrastructure.yaml
   PARAMETERS_FILE: cloudformation/parameters.json
@@ -60,7 +61,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-Validate-${{ github.run_id }}
 
@@ -87,7 +88,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-Upload-${{ github.run_id }}
 
@@ -98,10 +99,10 @@ jobs:
           S3_URL="https://${{ env.CFN_BUCKET }}.s3.${{ env.AWS_REGION }}.amazonaws.com/${S3_KEY}"
 
           echo "Uploading to s3://${{ env.CFN_BUCKET }}/${S3_KEY}..."
-          aws s3 cp ${{ env.TEMPLATE_FILE }} s3://${{ env.CFN_BUCKET }}/${S3_KEY}
+          aws s3 cp "${{ env.TEMPLATE_FILE }}" "s3://${{ env.CFN_BUCKET }}/${S3_KEY}"
 
-          echo "template_s3_url=${S3_URL}" >> $GITHUB_OUTPUT
-          echo "Uploaded: ${S3_URL}"
+          echo "Template S3 URL: ${S3_URL}"
+          echo "template_s3_url=${S3_URL}" >> "$GITHUB_OUTPUT"
 
   # ─────────────────────────────────────────────
   # JOB 3: Create Change Set
@@ -119,7 +120,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-ChangeSet-${{ github.run_id }}
 
@@ -141,20 +142,28 @@ jobs:
             CHANGESET_TYPE="CREATE"
           fi
 
+          TEMPLATE_URL="${{ needs.upload-template.outputs.template_s3_url }}"
+          echo "Template URL: ${TEMPLATE_URL}"
+
+          if [ -z "${TEMPLATE_URL}" ]; then
+            echo "ERROR: template_s3_url output is empty. Check the upload-template job."
+            exit 1
+          fi
+
           echo "Creating change set '${{ env.CHANGESET_NAME }}' (type: ${CHANGESET_TYPE})..."
           aws cloudformation create-change-set \
-            --stack-name ${{ env.STACK_NAME }} \
-            --change-set-name ${{ env.CHANGESET_NAME }} \
-            --change-set-type ${CHANGESET_TYPE} \
-            --template-url ${{ needs.upload-template.outputs.template_s3_url }} \
-            --parameters file://${{ env.PARAMETERS_FILE }} \
-            --tags file://${{ env.TAGS_FILE }} \
+            --stack-name "${{ env.STACK_NAME }}" \
+            --change-set-name "${{ env.CHANGESET_NAME }}" \
+            --change-set-type "${CHANGESET_TYPE}" \
+            --template-url "${TEMPLATE_URL}" \
+            --parameters "file://${{ env.PARAMETERS_FILE }}" \
+            --tags "file://${{ env.TAGS_FILE }}" \
             --capabilities CAPABILITY_NAMED_IAM
 
           echo "Waiting for change set to be ready..."
           aws cloudformation wait change-set-create-complete \
-            --stack-name ${{ env.STACK_NAME }} \
-            --change-set-name ${{ env.CHANGESET_NAME }} || true
+            --stack-name "${{ env.STACK_NAME }}" \
+            --change-set-name "${{ env.CHANGESET_NAME }}" || true
 
       - name: Check change set status
         id: check-changeset
@@ -203,7 +212,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-Deploy-${{ github.run_id }}
 
@@ -234,7 +243,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: GitHubActions-PostDeploy-${{ github.run_id }}
 
