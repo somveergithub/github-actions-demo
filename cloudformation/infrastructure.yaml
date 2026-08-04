@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Demo infrastructure stack containing a Lambda function.
+  Managed by GitHub Actions CI/CD pipeline.
+
+# ─────────────────────────────────────────────
+# Parameters
+# ─────────────────────────────────────────────
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment environment
+
+  ProjectName:
+    Type: String
+    Default: cfn-demo
+    Description: Project name used as a prefix for all resources
+
+  LambdaMemorySize:
+    Type: Number
+    Default: 128
+    AllowedValues: [128, 256, 512, 1024]
+    Description: Memory allocation for Lambda function in MB
+
+# ─────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────
+Resources:
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: ManagedBy
+          Value: GitHubActions
+
+  DemoLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-handler"
+      Description: !Sub "Demo Lambda function for ${ProjectName} in ${Environment}"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: 30
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          PROJECT_NAME: !Ref ProjectName
+      Code:
+        ZipFile: |
+          import os
+          import json
+
+          def handler(event, context):
+              env = os.environ.get("ENVIRONMENT", "unknown")
+              project = os.environ.get("PROJECT_NAME", "unknown")
+              print(f"[{project}] Running in {env}")
+              print(f"Event received: {json.dumps(event)}")
+              return {
+                  "statusCode": 200,
+                  "body": json.dumps({
+                      "message": "Hello from demo Lambda!",
+                      "environment": env,
+                      "project": project
+                  })
+              }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: ManagedBy
+          Value: GitHubActions
+
+# ─────────────────────────────────────────────
+# Outputs
+# ─────────────────────────────────────────────
+Outputs:
+  LambdaFunctionName:
+    Description: Lambda function name
+    Value: !Ref DemoLambdaFunction
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-LambdaFunctionName"
+
+  LambdaFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt DemoLambdaFunction.Arn
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-LambdaArn"
