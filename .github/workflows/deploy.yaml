@@ -160,10 +160,34 @@ jobs:
             --tags "file://${{ env.TAGS_FILE }}" \
             --capabilities CAPABILITY_NAMED_IAM
 
-          echo "Waiting for change set to be ready..."
-          aws cloudformation wait change-set-create-complete \
-            --stack-name "${{ env.STACK_NAME }}" \
-            --change-set-name "${{ env.CHANGESET_NAME }}" || true
+          echo "Polling change set status (max 20 attempts, 15s apart)..."
+          for i in $(seq 1 20); do
+            STATUS=$(aws cloudformation describe-change-set \
+              --stack-name "${{ env.STACK_NAME }}" \
+              --change-set-name "${{ env.CHANGESET_NAME }}" \
+              --query 'Status' --output text)
+
+            echo "Attempt ${i}/20 — Status: ${STATUS}"
+
+            if [ "${STATUS}" = "CREATE_COMPLETE" ]; then
+              echo "Change set is ready."
+              break
+            elif [ "${STATUS}" = "FAILED" ]; then
+              echo "Change set moved to FAILED — will be handled in next step."
+              break
+            elif [ "${STATUS}" = "REVIEW_IN_PROGRESS" ] || [ "${STATUS}" = "CREATE_IN_PROGRESS" ]; then
+              echo "Still pending, waiting 15s..."
+              sleep 15
+            else
+              echo "Unexpected status: ${STATUS}"
+              sleep 15
+            fi
+
+            if [ "${i}" = "20" ]; then
+              echo "ERROR: Change set did not reach a terminal state after 5 minutes."
+              exit 1
+            fi
+          done
 
       - name: Check change set status
         id: check-changeset
@@ -225,12 +249,43 @@ jobs:
 
       - name: Wait for stack to stabilize
         run: |
-          echo "Waiting for stack to reach COMPLETE state..."
-          aws cloudformation wait stack-update-complete \
-            --stack-name ${{ env.STACK_NAME }} 2>/dev/null || \
-          aws cloudformation wait stack-create-complete \
-            --stack-name ${{ env.STACK_NAME }}
-          echo "Stack deployment complete."
+          echo "Polling stack status (max 40 attempts, 30s apart = 20 min max)..."
+          for i in $(seq 1 40); do
+            STATUS=$(aws cloudformation describe-stacks \
+              --stack-name "${{ env.STACK_NAME }}" \
+              --query 'Stacks[0].StackStatus' --output text)
+
+            echo "Attempt ${i}/40 — Stack status: ${STATUS}"
+
+            case "${STATUS}" in
+              CREATE_COMPLETE|UPDATE_COMPLETE)
+                echo "Stack deployment succeeded."
+                exit 0
+                ;;
+              CREATE_IN_PROGRESS|UPDATE_IN_PROGRESS|UPDATE_COMPLETE_CLEANUP_IN_PROGRESS)
+                echo "Still in progress, waiting 30s..."
+                sleep 30
+                ;;
+              CREATE_FAILED|UPDATE_FAILED|ROLLBACK_COMPLETE|ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_COMPLETE|UPDATE_ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_FAILED)
+                echo "ERROR: Stack deployment failed with status: ${STATUS}"
+                echo "--- Recent stack events ---"
+                aws cloudformation describe-stack-events \
+                  --stack-name "${{ env.STACK_NAME }}" \
+                  --query 'StackEvents[:10].{Time:Timestamp,Status:ResourceStatus,Resource:LogicalResourceId,Reason:ResourceStatusReason}' \
+                  --output table
+                exit 1
+                ;;
+              *)
+                echo "Unexpected status: ${STATUS}, waiting 30s..."
+                sleep 30
+                ;;
+            esac
+
+            if [ "${i}" = "40" ]; then
+              echo "ERROR: Stack did not stabilize within 20 minutes."
+              exit 1
+            fi
+          done
 
   # ─────────────────────────────────────────────
   # JOB 5: Post-Deployment Verification
